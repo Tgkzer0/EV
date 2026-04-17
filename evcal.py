@@ -5,7 +5,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -19,7 +19,7 @@ except Exception:
     simpledialog = None
 
 
-RARITY_ORDER = [
+DEFAULT_RARITY_ORDER = [
     "common",
     "uncommon",
     "rare",
@@ -40,6 +40,13 @@ RARITY_ALIASES = {
     "sr": "super rare",
     "super": "super rare",
     "super rare": "super rare",
+    "double rare": "double rare",
+    "ultra rare": "ultra rare",
+    "holo rare": "holo rare",
+    "reverse holo": "reverse holo",
+    "mythic": "mythic",
+    "mythic rare": "mythic",
+    "foil": "foil",
     "sec": "secret rare",
     "scr": "secret rare",
     "secret": "secret rare",
@@ -79,6 +86,7 @@ class PullProfile:
     name: str
     packs_per_box: int
     boxes_per_case: int
+    cards_per_pack: float
     commons_per_pack: float
     uncommons_per_pack: float
     rares_per_pack: float
@@ -92,9 +100,10 @@ class PullProfile:
 
 
 DEFAULT_PROFILES = {
-    "normal": PullProfile("Normal", 24, 12, 7, 3, 1, 0, 0, 0),
-    "bt": PullProfile("BT", 24, 12, 7, 3, 1, 0, 0, 0),
-    "ex": PullProfile("EX", 24, 12, 7, 3, 1, 0, 0, 0),
+    "custom": PullProfile("Custom", 24, 12, 11, 7, 3, 1, 0, 0, 0),
+    "normal": PullProfile("Normal", 24, 12, 11, 7, 3, 1, 0, 0, 0),
+    "bt": PullProfile("BT", 24, 12, 11, 7, 3, 1, 0, 0, 0),
+    "ex": PullProfile("EX", 24, 12, 11, 7, 3, 1, 0, 0, 0),
 }
 
 
@@ -110,6 +119,13 @@ def first_existing_column(columns: Iterable[str], candidates: Iterable[str]) -> 
 def clean_price(value) -> float:
     if pd.isna(value):
         return 0.0
+    cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+    if cleaned in {"", ".", "-", "-."}:
+        return 0.0
+    try:
+        return max(float(cleaned), 0.0)
+    except ValueError:
+        return 0.0
 
 
 def clean_number(value) -> Optional[float]:
@@ -122,13 +138,6 @@ def clean_number(value) -> Optional[float]:
         return float(cleaned)
     except ValueError:
         return None
-    cleaned = re.sub(r"[^0-9.\-]", "", str(value))
-    if cleaned in {"", ".", "-", "-."}:
-        return 0.0
-    try:
-        return max(float(cleaned), 0.0)
-    except ValueError:
-        return 0.0
 
 
 def normalize_rarity(value) -> str:
@@ -218,7 +227,7 @@ def read_pull_counts_from_dataframe(df: pd.DataFrame, profile: PullProfile) -> D
     pull_counts: Dict[str, float] = {}
     for _, row in df.iterrows():
         rarity = normalize_rarity(row.get(rarity_col))
-        if rarity not in RARITY_ORDER:
+        if not rarity:
             continue
 
         expected_pulls = None
@@ -274,6 +283,30 @@ def prompt_int(root, title: str, prompt: str, default: int) -> int:
     return int(value)
 
 
+def parse_rarity_counts(text: str) -> Dict[str, float]:
+    counts: Dict[str, float] = {}
+    if not text:
+        return counts
+
+    parts = re.split(r"[,;\n]+", text)
+    for part in parts:
+        if not part.strip():
+            continue
+        if "=" in part:
+            rarity, value = part.split("=", 1)
+        elif ":" in part:
+            rarity, value = part.split(":", 1)
+        else:
+            raise ValueError(f"Could not parse rarity count: {part!r}. Use rarity=expected pulls.")
+
+        rarity = normalize_rarity(rarity)
+        number = clean_number(value)
+        if not rarity or number is None:
+            raise ValueError(f"Could not parse rarity count: {part!r}.")
+        counts[rarity] = max(number, 0.0)
+    return counts
+
+
 def choose_csv_source(root) -> str:
     source = prompt_text(
         root,
@@ -294,14 +327,19 @@ def choose_csv_source(root) -> str:
 
 
 def profile_from_gui(root) -> PullProfile:
-    choice = prompt_text(root, "Product type", "Choose a profile: Normal, BT, or EX", "Normal").lower()
-    profile = DEFAULT_PROFILES.get(choice, DEFAULT_PROFILES["normal"])
+    choice = prompt_text(root, "Product type", "Choose a profile: Custom, Normal, BT, or EX", "Custom").lower()
+    profile = DEFAULT_PROFILES.get(choice, DEFAULT_PROFILES["custom"])
 
-    if messagebox.askyesno("Pull rates", "Do you want to change pack, box, or pull-rate defaults?", parent=root):
+    if choice == "custom" or messagebox.askyesno(
+        "Product layout",
+        "Do you want to change pack, box, or card-count defaults?",
+        parent=root,
+    ):
         return PullProfile(
             profile.name,
             prompt_int(root, "Pull rates", "Packs per box", profile.packs_per_box),
             prompt_int(root, "Pull rates", "Boxes per case", profile.boxes_per_case),
+            prompt_float(root, "Pull rates", "Cards per pack", profile.cards_per_pack),
             prompt_float(root, "Pull rates", "Commons per pack", profile.commons_per_pack),
             prompt_float(root, "Pull rates", "Uncommons per pack", profile.uncommons_per_pack),
             prompt_float(root, "Pull rates", "Rare-slot cards per pack", profile.rares_per_pack),
@@ -314,13 +352,32 @@ def profile_from_gui(root) -> PullProfile:
 
 def profile_from_args(args) -> PullProfile:
     base = DEFAULT_PROFILES[args.profile.lower()]
+    packs_per_box = args.packs_per_box if args.packs_per_box is not None else base.packs_per_box
+    boxes_per_case = args.boxes_per_case if args.boxes_per_case is not None else base.boxes_per_case
+    if args.packs_per_case is not None:
+        packs_per_box = args.packs_per_case
+        boxes_per_case = 1
+
+    cards_per_pack = args.cards_per_pack if args.cards_per_pack is not None else base.cards_per_pack
+    rares_per_pack = args.rares_per_pack if args.rares_per_pack is not None else base.rares_per_pack
+    uncommons_per_pack = (
+        args.uncommons_per_pack if args.uncommons_per_pack is not None else base.uncommons_per_pack
+    )
+    if args.commons_per_pack is not None:
+        commons_per_pack = args.commons_per_pack
+    elif args.cards_per_pack is not None:
+        commons_per_pack = max(cards_per_pack - uncommons_per_pack - rares_per_pack, 0.0)
+    else:
+        commons_per_pack = base.commons_per_pack
+
     return PullProfile(
         base.name,
-        args.packs_per_box if args.packs_per_box is not None else base.packs_per_box,
-        args.boxes_per_case if args.boxes_per_case is not None else base.boxes_per_case,
-        args.commons_per_pack if args.commons_per_pack is not None else base.commons_per_pack,
-        args.uncommons_per_pack if args.uncommons_per_pack is not None else base.uncommons_per_pack,
-        args.rares_per_pack if args.rares_per_pack is not None else base.rares_per_pack,
+        packs_per_box,
+        boxes_per_case,
+        cards_per_pack,
+        commons_per_pack,
+        uncommons_per_pack,
+        rares_per_pack,
         args.super_rares_per_box if args.super_rares_per_box is not None else base.super_rares_per_box,
         args.secret_rares_per_case if args.secret_rares_per_case is not None else base.secret_rares_per_case,
         args.alternate_arts_per_case
@@ -356,6 +413,18 @@ def build_pull_counts(profile: PullProfile, override_counts: Optional[Dict[str, 
     return pull_counts
 
 
+def ordered_rarities(df: pd.DataFrame, pull_counts: Dict[str, float]) -> List[str]:
+    seen = set()
+    rarities: List[str] = []
+    for rarity in DEFAULT_RARITY_ORDER:
+        if rarity in set(df["ev_rarity"]) or rarity in pull_counts:
+            rarities.append(rarity)
+            seen.add(rarity)
+
+    extras = sorted((set(df["ev_rarity"]) | set(pull_counts)) - seen)
+    return rarities + [rarity for rarity in extras if rarity]
+
+
 def calculate_ev(
     df: pd.DataFrame,
     profile: PullProfile,
@@ -372,7 +441,7 @@ def calculate_ev(
     gross_case_ev = 0.0
     net_case_ev = 0.0
 
-    for rarity in RARITY_ORDER:
+    for rarity in ordered_rarities(df, pull_counts):
         prices = df.loc[df["ev_rarity"] == rarity, "ev_price"]
         pull_count = pull_counts.get(rarity, 0)
         average_price = float(prices.mean()) if not prices.empty else 0.0
@@ -424,6 +493,7 @@ def format_summary(result: Dict[str, object]) -> str:
         f"Verdict: {verdict}",
         "",
         f"Profile: {profile.name}",
+        f"Cards per pack: {profile.cards_per_pack:g}",
         f"Packs per box: {profile.packs_per_box}",
         f"Boxes per case: {profile.boxes_per_case}",
         "",
@@ -475,14 +545,15 @@ def run_gui() -> int:
                 pull_overrides = load_pull_counts(pull_source, profile)
             elif messagebox.askyesno(
                 "Rarity spread",
-                "Do you want to enter expected high-rarity pulls per case now?",
+                "Do you want to enter expected pulls per case now?",
                 parent=root,
             ):
-                pull_overrides = {
-                    "super rare": prompt_float(root, "Rarity spread", "Expected super rares per case", 0.0),
-                    "secret rare": prompt_float(root, "Rarity spread", "Expected secret rares per case", 0.0),
-                    "alternate art": prompt_float(root, "Rarity spread", "Expected alternate arts per case", 0.0),
-                }
+                text = prompt_text(
+                    root,
+                    "Rarity spread",
+                    "Enter expected pulls per case as rarity=count pairs.\n\nExample:\nrare=240, holo rare=36, secret rare=2, alt art=1.5",
+                )
+                pull_overrides = parse_rarity_counts(text)
         case_cost = prompt_float(root, "Purchase cost", "What is your total buy cost for one case?", 0.0)
         fee_percent = prompt_float(root, "Selling fees", "Marketplace/payment fee percent", 13.0)
         price_adjustment = prompt_float(
@@ -536,12 +607,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--packs-per-box", type=int)
     parser.add_argument("--boxes-per-case", type=int)
+    parser.add_argument("--packs-per-case", type=int, help="Shortcut for products sold as loose packs per case.")
+    parser.add_argument("--cards-per-pack", type=float)
     parser.add_argument("--commons-per-pack", type=float)
     parser.add_argument("--uncommons-per-pack", type=float)
     parser.add_argument("--rares-per-pack", type=float)
     parser.add_argument("--super-rares-per-box", type=float)
     parser.add_argument("--secret-rares-per-case", type=float)
     parser.add_argument("--alternate-arts-per-case", type=float)
+    parser.add_argument(
+        "--pull",
+        action="append",
+        default=[],
+        help="Expected pulls per case, like 'secret rare=2'. Can be used multiple times.",
+    )
     parser.add_argument("--output", help="Optional CSV path for the rarity breakdown.")
     return parser
 
@@ -552,6 +631,7 @@ def run_cli(args) -> int:
 
     profile = profile_from_args(args)
     pull_overrides = load_pull_counts(args.pull_rates, profile) if args.pull_rates else pull_counts_from_card_data(args.csv, profile)
+    pull_overrides.update(parse_rarity_counts("\n".join(args.pull)))
     df = load_card_data(args.csv)
     result = calculate_ev(
         df,

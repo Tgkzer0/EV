@@ -22,8 +22,8 @@ python evcal.py
 ```
 
 The app will ask for a CSV file, Google Drive CSV share link, or direct CSV URL.
-It will then ask for product type, pull rates, buy cost, selling fees, and the
-percent of market price you expect to actually receive.
+It will then ask for product layout, pull rates, buy cost, selling fees, and
+the percent of market price you expect to actually receive.
 
 The calculator no longer assumes chase cards are guaranteed. If your price CSV
 has pull-rate columns, it will use them. If not, the app can ask for a separate
@@ -47,6 +47,24 @@ Optional example with a separate rarity spread file:
 python evcal.py --csv prices.csv --pull-rates pull_rates.csv --case-cost 850
 ```
 
+Example for a product with custom pack and case layout:
+
+```bash
+python evcal.py --csv prices.csv --packs-per-box 36 --boxes-per-case 6 --cards-per-pack 15 --case-cost 720
+```
+
+Example for products sold as loose packs per case:
+
+```bash
+python evcal.py --csv prices.csv --packs-per-case 144 --cards-per-pack 10 --case-cost 500
+```
+
+You can also enter expected pulls directly from the command line:
+
+```bash
+python evcal.py --csv prices.csv --packs-per-case 144 --pull "ultra rare=3" --pull "secret rare=1.2"
+```
+
 ## CSV columns
 
 The CSV should include a price column and a rarity column. The script looks for
@@ -64,7 +82,9 @@ the card is counted as `alternate art`.
 ## Pull-rate columns
 
 The price CSV or a separate `--pull-rates` CSV can include rarity spread data.
-Use a `Rarity` column plus one of these formats:
+Use a `Rarity` column plus one of these formats. Rarity names are not limited to
+one game, so names like `ultra rare`, `mythic`, `holo rare`, `foil`, `legendary`,
+or game-specific terms are all allowed.
 
 ```csv
 Rarity,Pulls Per Case
@@ -91,6 +111,23 @@ boxes per case.
 
 If you enter only chase-card odds, the normal rare-slot count is reduced so the
 same pack slot is not counted twice.
+
+## Product layout
+
+For each product, set:
+
+- `packs per box`
+- `boxes per case`
+- `cards per pack`
+- expected rarity slots per pack or per case
+
+If the product is not packaged as boxes inside a case, use `--packs-per-case`.
+That treats the case as one container with that many packs.
+
+The app does not automatically scrape pack configurations from the web because
+TCG rarity spreads are often unofficial, regional, or product-specific. The safer
+workflow is to enter the product layout from a reliable source, then save it as a
+pull-rate CSV for reuse.
 
 ## How to read the result
 
